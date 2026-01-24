@@ -109,7 +109,20 @@ type Config struct {
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
+	// Skills defines server-side skill injection settings.
+	Skills SkillsConfig `yaml:"skills" json:"skills"`
+
 	legacyMigrationPending bool `yaml:"-" json:"-"`
+}
+
+// SkillsConfig defines server-side skill injection settings.
+type SkillsConfig struct {
+	// Enabled toggles skill injection.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Dir is the path to the skills directory.
+	Dir string `yaml:"dir" json:"dir"`
+	// Watch enables file watching for skill changes.
+	Watch bool `yaml:"watch" json:"watch"`
 }
 
 // TLSConfig holds HTTPS server settings.

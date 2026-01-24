@@ -27,6 +27,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/skills"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -170,6 +171,11 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+
+	// skillManager handles server-side skill injection
+	skillManager  *skills.Manager
+	skillInjector *skills.Injector
+	skillWatcher  *skills.Watcher
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -265,6 +271,35 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.mgmt.SetLogDirectory(logDir)
 	s.localPassword = optionState.localPassword
 
+	// Initialize skills manager
+	if cfg.Skills.Enabled {
+		skillsCfg := skills.SkillsConfig{
+			Enabled: cfg.Skills.Enabled,
+			Dir:     cfg.Skills.Dir,
+			Watch:   cfg.Skills.Watch,
+		}
+		skillManager, err := skills.NewManager(skillsCfg)
+		if err != nil {
+			log.WithError(err).Error("failed to initialize skills manager")
+		} else {
+			s.skillManager = skillManager
+			s.skillInjector = skills.NewInjector(skillManager)
+
+			if cfg.Skills.Watch {
+				watcher, err := skills.NewWatcher(skillManager)
+				if err != nil {
+					log.WithError(err).Warn("failed to create skills watcher")
+				} else {
+					s.skillWatcher = watcher
+					if err := watcher.Start(); err != nil {
+						log.WithError(err).Warn("failed to start skills watcher")
+					}
+				}
+			}
+			log.Info("skills manager initialized")
+		}
+	}
+
 	// Setup routes
 	s.setupRoutes()
 
@@ -318,6 +353,10 @@ func (s *Server) setupRoutes() {
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
+	// Add skill injection middleware if enabled
+	if s.skillInjector != nil {
+		v1.Use(middleware.SkillInjectionMiddleware(s.skillInjector, s.isAdminAPIKey))
+	}
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -1032,6 +1071,22 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 		return
 	}
 	s.wsAuthChanged = fn
+}
+
+// isAdminAPIKey checks if an API key has admin privileges.
+// This is used to allow certain privileged operations like skipping enforced skills.
+func (s *Server) isAdminAPIKey(apiKey string) bool {
+	if s == nil || s.cfg == nil {
+		return false
+	}
+	// Check if it's the management key
+	if s.cfg.RemoteManagement.SecretKey != "" {
+		if subtle.ConstantTimeCompare([]byte(apiKey), []byte(s.cfg.RemoteManagement.SecretKey)) == 1 {
+			return true
+		}
+	}
+	// Could add additional admin key checks here
+	return false
 }
 
 // (management handlers moved to internal/api/handlers/management)
