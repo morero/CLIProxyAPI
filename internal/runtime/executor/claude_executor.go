@@ -6,6 +6,7 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -927,6 +928,13 @@ func checkSystemInstructionsWithMode(payload []byte, strictMode bool) []byte {
 			})
 			payload, _ = sjson.SetRawBytes(payload, "system", []byte(claudeCodeInstructions))
 		}
+	} else if system.Exists() && system.String() != "" {
+		// System is a string (e.g. injected by skills middleware) — convert to array
+		// and prepend Claude Code identity while preserving existing content
+		existingText := system.String()
+		escaped, _ := json.Marshal(existingText)
+		combined := fmt.Sprintf(`[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."},{"type":"text","text":%s}]`, string(escaped))
+		payload, _ = sjson.SetRawBytes(payload, "system", []byte(combined))
 	} else {
 		payload, _ = sjson.SetRawBytes(payload, "system", []byte(claudeCodeInstructions))
 	}

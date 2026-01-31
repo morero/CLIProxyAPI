@@ -8,12 +8,14 @@ import (
 	"strings"
 	"sync"
 
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
 // Config holds the skill configuration.
 type Config struct {
 	EnforcedLayers    []string       `yaml:"enforced-layers"`
+	InjectedSkills    []string       `yaml:"injected-skills"`
 	AvailableProfiles []string       `yaml:"available-profiles"`
 	DefaultProfiles   DefaultProfile `yaml:"default-profiles"`
 }
@@ -109,17 +111,47 @@ func (m *Manager) loadConfig() error {
 }
 
 // loadAllSkills loads all skill files into the cache.
+// Skills are organized in layer directories (e.g., base/, personal/, profiles/)
+// directly under the skills directory.
 func (m *Manager) loadAllSkills() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	cacheDir := filepath.Join(m.skillsDir, "cache")
-	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
-		return nil
+	// Clear existing cache
+	m.skillCache = make(map[string]string)
+
+	// Walk through skills directory looking for layer subdirectories
+	entries, err := os.ReadDir(m.skillsDir)
+	if err != nil {
+		log.WithError(err).WithField("dir", m.skillsDir).Error("failed to read skills directory")
+		return err
 	}
 
-	// Walk through cache directory
-	return filepath.Walk(cacheDir, func(path string, info os.FileInfo, err error) error {
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		layer := entry.Name()
+		// Skip hidden directories and config files
+		if strings.HasPrefix(layer, ".") {
+			continue
+		}
+
+		layerDir := filepath.Join(m.skillsDir, layer)
+		if err := m.loadLayerSkills(layer, layerDir); err != nil {
+			log.WithError(err).WithField("layer", layer).Warn("failed to load layer skills")
+			continue
+		}
+	}
+
+	log.WithField("skills_count", len(m.skillCache)).Info("loaded skills into cache")
+	return nil
+}
+
+// loadLayerSkills loads all .md files from a layer directory.
+func (m *Manager) loadLayerSkills(layer, dir string) error {
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip errors
 		}
@@ -130,19 +162,13 @@ func (m *Manager) loadAllSkills() error {
 			return nil
 		}
 
-		// Extract layer and name
-		relPath, err := filepath.Rel(cacheDir, path)
+		// Extract name relative to layer directory
+		relPath, err := filepath.Rel(dir, path)
 		if err != nil {
 			return nil
 		}
 
-		parts := strings.SplitN(relPath, string(filepath.Separator), 2)
-		if len(parts) != 2 {
-			return nil
-		}
-
-		layer := parts[0]
-		name := strings.TrimSuffix(parts[1], ".md")
+		name := strings.TrimSuffix(relPath, ".md")
 		name = strings.ReplaceAll(name, string(filepath.Separator), "-")
 
 		content, err := os.ReadFile(path)
@@ -151,7 +177,8 @@ func (m *Manager) loadAllSkills() error {
 		}
 
 		key := layer + "/" + name
-		m.skillCache[key] = string(content)
+		m.skillCache[key] = stripFrontmatter(string(content))
+		log.WithFields(log.Fields{"key": key, "size": len(content)}).Debug("loaded skill")
 
 		return nil
 	})
@@ -285,6 +312,73 @@ func (m *Manager) GetDefaultProfiles(apiKey string) []string {
 
 	// Fall back to global defaults
 	return m.config.DefaultProfiles.Global
+}
+
+// GetInjectedContent returns the combined content of only the explicitly listed
+// injected skills. Unlike GetEnforcedContent which returns ALL skills in enforced
+// layers, this returns only the specific skills listed in the injected-skills config.
+// This supports the on-demand skill loading pattern where most skills are loaded
+// via MCP tools rather than injected into every request.
+func (m *Manager) GetInjectedContent() string {
+	if !m.enabled || m.config == nil {
+		return ""
+	}
+
+	// If no injected-skills configured, fall back to GetEnforcedContent for backward compat
+	if len(m.config.InjectedSkills) == 0 {
+		return m.GetEnforcedContent()
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var builder strings.Builder
+
+	for _, skillID := range m.config.InjectedSkills {
+		// Search cache for a skill matching this ID.
+		// The cache key is "layer/name" but the injected-skills config uses the
+		// skill's ID (from frontmatter) or the relative path name.
+		// Try direct cache key match first, then search by suffix.
+		found := false
+		for key, content := range m.skillCache {
+			// Match by exact key (e.g. "base/personality")
+			// or by the name part after the last slash (e.g. "personality")
+			name := key
+			if idx := strings.LastIndex(key, "/"); idx >= 0 {
+				name = key[idx+1:]
+			}
+			if key == skillID || name == skillID {
+				if builder.Len() > 0 {
+					builder.WriteString("\n\n")
+				}
+				builder.WriteString(content)
+				found = true
+				break
+			}
+		}
+		if !found {
+			log.WithField("skill", skillID).Warn("injected skill not found in cache")
+		}
+	}
+
+	return builder.String()
+}
+
+// stripFrontmatter removes YAML frontmatter (delimited by --- lines) from content.
+func stripFrontmatter(content string) string {
+	if !strings.HasPrefix(content, "---") {
+		return content
+	}
+
+	// Find the closing ---
+	endIdx := strings.Index(content[3:], "\n---")
+	if endIdx < 0 {
+		return content
+	}
+
+	// Skip past the closing --- and any trailing newline
+	stripped := content[3+endIdx+4:]
+	return strings.TrimLeft(stripped, "\n")
 }
 
 // matchPattern checks if a string matches a pattern with wildcards.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -32,12 +33,11 @@ func (i *Injector) InjectSkills(body []byte, apiKey string, requestedProfiles []
 
 	var skillContent strings.Builder
 
-	// Add enforced skills (unless skipped)
+	// Add injected skills (unless skipped)
 	if !skipEnforced {
-		enforced := i.manager.GetEnforcedContent()
-		if enforced != "" {
-			skillContent.WriteString("# Enforced Skills\n\n")
-			skillContent.WriteString(enforced)
+		injected := i.manager.GetInjectedContent()
+		if injected != "" {
+			skillContent.WriteString(injected)
 		}
 	}
 
@@ -70,8 +70,11 @@ func (i *Injector) InjectSkills(body []byte, apiKey string, requestedProfiles []
 	}
 
 	if skillContent.Len() == 0 {
+		log.Debug("no skill content to inject")
 		return body, nil
 	}
+
+	log.WithField("content_length", skillContent.Len()).Debug("injecting skills into request")
 
 	// Inject into the request
 	return i.prependToSystemMessage(body, skillContent.String())
@@ -90,6 +93,15 @@ func (i *Injector) prependToSystemMessage(body []byte, content string) ([]byte, 
 		return body, nil
 	}
 
+	// Detect Anthropic Messages API format: uses top-level "system" parameter
+	// instead of a {"role": "system"} message. Anthropic format is identified by
+	// having messages with only "user"/"assistant" roles and no "system" role messages,
+	// combined with presence of anthropic-specific fields or absence of OpenAI-specific ones.
+	if i.isAnthropicFormat(body, messages) {
+		return i.prependToAnthropicSystem(body, content)
+	}
+
+	// OpenAI chat completions format: system role in messages array
 	// Find existing system message
 	var systemIdx = -1
 	var currentIdx = 0
@@ -130,6 +142,87 @@ func (i *Injector) prependToSystemMessage(body []byte, content string) ([]byte, 
 	newMsgArray := append([]interface{}{newMessage}, msgArray...)
 
 	return sjson.SetBytes(body, "messages", newMsgArray)
+}
+
+// isAnthropicFormat detects if the request body uses the Anthropic Messages API format.
+// Anthropic format uses a top-level "system" param and does not allow "system" role in messages.
+// Key indicators: "max_tokens" (required in Anthropic), top-level "system" field, or
+// model name starting with "claude".
+func (i *Injector) isAnthropicFormat(body []byte, messages gjson.Result) bool {
+	// If there's already a top-level "system" field (string or array), it's Anthropic format
+	system := gjson.GetBytes(body, "system")
+	if system.Exists() {
+		return true
+	}
+
+	// Anthropic requires "max_tokens" (OpenAI uses "max_tokens" optionally or "max_completion_tokens")
+	// Check for model name as a strong signal
+	model := gjson.GetBytes(body, "model").String()
+	if strings.HasPrefix(model, "claude") {
+		return true
+	}
+
+	// Check if any message has "system" role - if so, it's OpenAI format
+	hasSystemRole := false
+	messages.ForEach(func(_, value gjson.Result) bool {
+		if value.Get("role").String() == "system" {
+			hasSystemRole = true
+			return false
+		}
+		return true
+	})
+	if hasSystemRole {
+		return false
+	}
+
+	// If "anthropic-version" header is embedded or "max_tokens" is present without
+	// "max_completion_tokens", lean toward Anthropic. But since we can't see headers here,
+	// check for the Anthropic-specific "top_k" or "top_p" alongside "max_tokens"
+	// without "max_completion_tokens".
+	hasMaxTokens := gjson.GetBytes(body, "max_tokens").Exists()
+	hasMaxCompletionTokens := gjson.GetBytes(body, "max_completion_tokens").Exists()
+	if hasMaxTokens && !hasMaxCompletionTokens && !hasSystemRole {
+		// Likely Anthropic - "max_tokens" is required for Anthropic, optional for OpenAI
+		// and OpenAI prefers "max_completion_tokens"
+		return true
+	}
+
+	return false
+}
+
+// prependToAnthropicSystem prepends skill content to the Anthropic Messages API
+// top-level "system" parameter. The system field can be a string or an array of
+// content blocks.
+func (i *Injector) prependToAnthropicSystem(body []byte, content string) ([]byte, error) {
+	system := gjson.GetBytes(body, "system")
+
+	if !system.Exists() {
+		// No existing system param - add it as a string
+		return sjson.SetBytes(body, "system", content)
+	}
+
+	if system.IsArray() {
+		// System is an array of content blocks - prepend a text block
+		newBlock := map[string]string{
+			"type": "text",
+			"text": content + "\n\n---\n\n",
+		}
+		var blocks []interface{}
+		blocks = append(blocks, newBlock)
+		system.ForEach(func(_, value gjson.Result) bool {
+			var block map[string]interface{}
+			if err := json.Unmarshal([]byte(value.Raw), &block); err == nil {
+				blocks = append(blocks, block)
+			}
+			return true
+		})
+		return sjson.SetBytes(body, "system", blocks)
+	}
+
+	// System is a string - prepend to it
+	existing := system.String()
+	newSystem := content + "\n\n---\n\n" + existing
+	return sjson.SetBytes(body, "system", newSystem)
 }
 
 // prependToInstructions handles OpenAI responses API format.
