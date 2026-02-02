@@ -155,11 +155,28 @@ func (i *Injector) isAnthropicFormat(body []byte, messages gjson.Result) bool {
 		return true
 	}
 
-	// Anthropic requires "max_tokens" (OpenAI uses "max_tokens" optionally or "max_completion_tokens")
-	// Check for model name as a strong signal
-	model := gjson.GetBytes(body, "model").String()
+	// Check model name - only Claude models use Anthropic format
+	model := strings.ToLower(gjson.GetBytes(body, "model").String())
 	if strings.HasPrefix(model, "claude") {
 		return true
+	}
+
+	// Explicitly NOT Anthropic format if model is from known OpenAI-compatible providers
+	// These providers don't support top-level "system" field
+	openAICompatPrefixes := []string{
+		"gpt", "o1", "o3", "o4", // OpenAI
+		"gemini", "imagen", // Google
+		"llama", "mistral", "mixtral", "codestral", // Meta/Mistral
+		"qwen", "coder", // Qwen
+		"glm", "zai-glm", // Z.AI/Cerebras GLM
+		"deepseek", // DeepSeek
+		"grok",     // xAI
+		"command",  // Cohere
+	}
+	for _, prefix := range openAICompatPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return false
+		}
 	}
 
 	// Check if any message has "system" role - if so, it's OpenAI format
@@ -175,18 +192,10 @@ func (i *Injector) isAnthropicFormat(body []byte, messages gjson.Result) bool {
 		return false
 	}
 
-	// If "anthropic-version" header is embedded or "max_tokens" is present without
-	// "max_completion_tokens", lean toward Anthropic. But since we can't see headers here,
-	// check for the Anthropic-specific "top_k" or "top_p" alongside "max_tokens"
-	// without "max_completion_tokens".
-	hasMaxTokens := gjson.GetBytes(body, "max_tokens").Exists()
-	hasMaxCompletionTokens := gjson.GetBytes(body, "max_completion_tokens").Exists()
-	if hasMaxTokens && !hasMaxCompletionTokens && !hasSystemRole {
-		// Likely Anthropic - "max_tokens" is required for Anthropic, optional for OpenAI
-		// and OpenAI prefers "max_completion_tokens"
-		return true
-	}
-
+	// Only fall back to Anthropic detection heuristics for unknown models
+	// If "max_tokens" is present without "max_completion_tokens" AND no system role,
+	// it might be Anthropic, but only if model is truly unknown
+	// Default to OpenAI format (safer - works with more providers)
 	return false
 }
 
