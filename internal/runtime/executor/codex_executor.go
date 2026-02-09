@@ -13,6 +13,7 @@ import (
 	codexauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -602,6 +603,158 @@ func codexCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 		}
 	}
 	return
+}
+
+// FetchCodexModels retrieves available models from OpenAI's API using the supplied auth.
+// This allows the proxy to dynamically discover new models without code updates.
+func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
+	apiKey, baseURL := codexCreds(auth)
+	if apiKey == "" {
+		log.Debug("codex executor: no API key available for model fetch")
+		return nil
+	}
+	if baseURL == "" {
+		baseURL = "https://api.openai.com"
+	}
+
+	modelsURL := strings.TrimSuffix(baseURL, "/") + "/v1/models"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	if err != nil {
+		log.Debugf("codex executor: failed to create models request: %v", err)
+		return nil
+	}
+
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		log.Debugf("codex executor: models request failed: %v", err)
+		return nil
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		log.Debugf("codex executor: models request returned status %d", httpResp.StatusCode)
+		return nil
+	}
+
+	bodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Debugf("codex executor: failed to read models response: %v", err)
+		return nil
+	}
+
+	// Parse the response - OpenAI returns {"data": [{"id": "...", "object": "model", "owned_by": "..."}]}
+	dataResult := gjson.GetBytes(bodyBytes, "data")
+	if !dataResult.Exists() || !dataResult.IsArray() {
+		log.Debugf("codex executor: invalid models response format")
+		return nil
+	}
+
+	models := make([]*registry.ModelInfo, 0)
+	staticModels := registry.GetOpenAIModels()
+	staticModelMap := make(map[string]*registry.ModelInfo)
+	for _, m := range staticModels {
+		staticModelMap[m.ID] = m
+	}
+
+	for _, item := range dataResult.Array() {
+		modelID := item.Get("id").String()
+		if modelID == "" {
+			continue
+		}
+
+		// Skip non-chat models (embeddings, whisper, tts, dall-e, etc.)
+		if !isOpenAIChatModel(modelID) {
+			continue
+		}
+
+		ownedBy := item.Get("owned_by").String()
+		if ownedBy == "" {
+			ownedBy = "openai"
+		}
+
+		created := item.Get("created").Int()
+		if created == 0 {
+			created = time.Now().Unix()
+		}
+
+		modelInfo := &registry.ModelInfo{
+			ID:                  modelID,
+			Object:              "model",
+			Created:             created,
+			OwnedBy:             ownedBy,
+			Type:                "openai",
+			DisplayName:         modelID,
+			ContextLength:       128000, // Default for GPT-4
+			MaxCompletionTokens: 16384,  // Default
+		}
+
+		// If we have static config for this model, use it
+		if staticModel, ok := staticModelMap[modelID]; ok {
+			if staticModel.Thinking != nil {
+				modelInfo.Thinking = staticModel.Thinking
+			}
+			if staticModel.MaxCompletionTokens > 0 {
+				modelInfo.MaxCompletionTokens = staticModel.MaxCompletionTokens
+			}
+			if staticModel.ContextLength > 0 {
+				modelInfo.ContextLength = staticModel.ContextLength
+			}
+			if staticModel.DisplayName != "" {
+				modelInfo.DisplayName = staticModel.DisplayName
+			}
+		}
+
+		// Infer thinking support for o1/o3 models
+		if modelInfo.Thinking == nil && (strings.HasPrefix(modelID, "o1") || strings.HasPrefix(modelID, "o3")) {
+			modelInfo.Thinking = &registry.ThinkingSupport{
+				Min:            1,
+				Max:            100000,
+				ZeroAllowed:    false,
+				DynamicAllowed: true,
+			}
+			modelInfo.MaxCompletionTokens = 100000
+		}
+
+		models = append(models, modelInfo)
+	}
+
+	if len(models) > 0 {
+		log.Debugf("codex executor: fetched %d chat models from OpenAI API", len(models))
+	}
+
+	return models
+}
+
+// isOpenAIChatModel returns true if the model ID looks like a chat/completion model
+func isOpenAIChatModel(modelID string) bool {
+	// Include GPT models
+	if strings.HasPrefix(modelID, "gpt-") {
+		return true
+	}
+	// Include o1/o3 reasoning models
+	if strings.HasPrefix(modelID, "o1") || strings.HasPrefix(modelID, "o3") {
+		return true
+	}
+	// Include chatgpt models
+	if strings.HasPrefix(modelID, "chatgpt") {
+		return true
+	}
+	// Exclude known non-chat models
+	excludePrefixes := []string{
+		"text-embedding", "embedding", "whisper", "tts", "dall-e",
+		"davinci", "curie", "babbage", "ada", "text-",
+		"code-", "moderation", "canary",
+	}
+	for _, prefix := range excludePrefixes {
+		if strings.HasPrefix(modelID, prefix) {
+			return false
+		}
+	}
+	return false
 }
 
 func (e *CodexExecutor) resolveCodexConfig(auth *cliproxyauth.Auth) *config.CodexKey {

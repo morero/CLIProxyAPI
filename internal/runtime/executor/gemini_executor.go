@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -450,6 +451,131 @@ func resolveGeminiBaseURL(auth *cliproxyauth.Auth) string {
 		return glEndpoint
 	}
 	return base
+}
+
+// FetchGeminiModels retrieves available models from Google's Generative Language API.
+// This allows the proxy to dynamically discover new Gemini models without code updates.
+func FetchGeminiModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
+	apiKey, bearer := geminiCreds(auth)
+	if apiKey == "" && bearer == "" {
+		log.Debug("gemini executor: no credentials available for model fetch")
+		return nil
+	}
+
+	baseURL := resolveGeminiBaseURL(auth)
+	modelsURL := baseURL + "/" + glAPIVersion + "/models"
+	if apiKey != "" {
+		modelsURL += "?key=" + apiKey
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	if err != nil {
+		log.Debugf("gemini executor: failed to create models request: %v", err)
+		return nil
+	}
+
+	if bearer != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		log.Debugf("gemini executor: models request failed: %v", err)
+		return nil
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		log.Debugf("gemini executor: models request returned status %d", httpResp.StatusCode)
+		return nil
+	}
+
+	bodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Debugf("gemini executor: failed to read models response: %v", err)
+		return nil
+	}
+
+	// Parse the response - Google returns {"models": [{"name": "models/gemini-...", "displayName": "..."}]}
+	modelsResult := gjson.GetBytes(bodyBytes, "models")
+	if !modelsResult.Exists() || !modelsResult.IsArray() {
+		log.Debugf("gemini executor: invalid models response format")
+		return nil
+	}
+
+	models := make([]*registry.ModelInfo, 0)
+	staticModels := registry.GetGeminiModels()
+	staticModelMap := make(map[string]*registry.ModelInfo)
+	for _, m := range staticModels {
+		staticModelMap[m.ID] = m
+	}
+
+	for _, item := range modelsResult.Array() {
+		// Google returns "models/gemini-1.5-pro" format
+		fullName := item.Get("name").String()
+		modelID := strings.TrimPrefix(fullName, "models/")
+		if modelID == "" {
+			continue
+		}
+
+		// Skip non-generateContent models
+		supportedMethods := item.Get("supportedGenerationMethods").Array()
+		supportsGenerate := false
+		for _, method := range supportedMethods {
+			if method.String() == "generateContent" {
+				supportsGenerate = true
+				break
+			}
+		}
+		if !supportsGenerate {
+			continue
+		}
+
+		displayName := item.Get("displayName").String()
+		if displayName == "" {
+			displayName = modelID
+		}
+
+		inputTokenLimit := item.Get("inputTokenLimit").Int()
+		outputTokenLimit := item.Get("outputTokenLimit").Int()
+		if inputTokenLimit == 0 {
+			inputTokenLimit = 1000000 // Default for Gemini 2.x
+		}
+		if outputTokenLimit == 0 {
+			outputTokenLimit = 8192
+		}
+
+		modelInfo := &registry.ModelInfo{
+			ID:                  modelID,
+			Object:              "model",
+			Created:             0,
+			OwnedBy:             "google",
+			Type:                "gemini",
+			DisplayName:         displayName,
+			ContextLength:       int(inputTokenLimit),
+			MaxCompletionTokens: int(outputTokenLimit),
+		}
+
+		// If we have static config for this model (thinking support, etc.), use it
+		if staticModel, ok := staticModelMap[modelID]; ok {
+			if staticModel.Thinking != nil {
+				modelInfo.Thinking = staticModel.Thinking
+			}
+			if staticModel.MaxCompletionTokens > 0 {
+				modelInfo.MaxCompletionTokens = staticModel.MaxCompletionTokens
+			}
+		}
+
+		models = append(models, modelInfo)
+	}
+
+	if len(models) > 0 {
+		log.Debugf("gemini executor: fetched %d models from Google API", len(models))
+	}
+
+	return models
 }
 
 func (e *GeminiExecutor) resolveGeminiConfig(auth *cliproxyauth.Auth) *config.GeminiKey {

@@ -18,6 +18,7 @@ import (
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -992,4 +993,140 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 	}
 
 	return payload
+}
+
+// FetchClaudeModels retrieves available models from Anthropic's API using the supplied auth.
+// This allows the proxy to dynamically discover new models (like Claude Opus 4.6) without code updates.
+func FetchClaudeModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
+	apiKey, baseURL := claudeCreds(auth)
+	if apiKey == "" {
+		log.Debug("claude executor: no API key available for model fetch")
+		return nil
+	}
+	if baseURL == "" {
+		baseURL = "https://api.anthropic.com"
+	}
+
+	modelsURL := strings.TrimSuffix(baseURL, "/") + "/v1/models"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	if err != nil {
+		log.Debugf("claude executor: failed to create models request: %v", err)
+		return nil
+	}
+
+	// Anthropic uses x-api-key header for API key auth, Authorization for OAuth
+	useAPIKey := auth != nil && auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""
+	if useAPIKey {
+		httpReq.Header.Set("x-api-key", apiKey)
+	} else {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		log.Debugf("claude executor: models request failed: %v", err)
+		return nil
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		log.Debugf("claude executor: models request returned status %d", httpResp.StatusCode)
+		return nil
+	}
+
+	bodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Debugf("claude executor: failed to read models response: %v", err)
+		return nil
+	}
+
+	// Parse the response - Anthropic returns {"data": [{"id": "...", "display_name": "...", "created_at": "..."}]}
+	dataResult := gjson.GetBytes(bodyBytes, "data")
+	if !dataResult.Exists() || !dataResult.IsArray() {
+		log.Debugf("claude executor: invalid models response format")
+		return nil
+	}
+
+	models := make([]*registry.ModelInfo, 0)
+	staticModels := registry.GetClaudeModels()
+	staticModelMap := make(map[string]*registry.ModelInfo)
+	for _, m := range staticModels {
+		staticModelMap[m.ID] = m
+	}
+
+	for _, item := range dataResult.Array() {
+		modelID := item.Get("id").String()
+		if modelID == "" {
+			continue
+		}
+
+		displayName := item.Get("display_name").String()
+		if displayName == "" {
+			displayName = modelID
+		}
+
+		createdAt := item.Get("created_at").String()
+		var created int64
+		if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
+			created = t.Unix()
+		} else {
+			created = time.Now().Unix()
+		}
+
+		// Start with defaults, override with static config if available
+		modelInfo := &registry.ModelInfo{
+			ID:                  modelID,
+			Object:              "model",
+			Created:             created,
+			OwnedBy:             "anthropic",
+			Type:                "claude",
+			DisplayName:         displayName,
+			ContextLength:       200000, // Default for Claude 4.x
+			MaxCompletionTokens: 64000,  // Default
+		}
+
+		// If we have static config for this model (thinking support, etc.), use it
+		if staticModel, ok := staticModelMap[modelID]; ok {
+			if staticModel.Thinking != nil {
+				modelInfo.Thinking = staticModel.Thinking
+			}
+			if staticModel.MaxCompletionTokens > 0 {
+				modelInfo.MaxCompletionTokens = staticModel.MaxCompletionTokens
+			}
+			if staticModel.ContextLength > 0 {
+				modelInfo.ContextLength = staticModel.ContextLength
+			}
+			if staticModel.Description != "" {
+				modelInfo.Description = staticModel.Description
+			}
+		}
+
+		// Infer thinking support for new Opus/Sonnet models not in static config
+		if modelInfo.Thinking == nil {
+			if strings.Contains(modelID, "opus-4") || strings.Contains(modelID, "sonnet-4") {
+				modelInfo.Thinking = &registry.ThinkingSupport{
+					Min:            1024,
+					Max:            128000,
+					ZeroAllowed:    true,
+					DynamicAllowed: true,
+				}
+			}
+		}
+
+		// Infer higher token limits for Opus 4.6+
+		if strings.Contains(modelID, "opus-4-6") || strings.Contains(modelID, "opus-4.6") {
+			modelInfo.MaxCompletionTokens = 128000
+		}
+
+		models = append(models, modelInfo)
+	}
+
+	if len(models) > 0 {
+		log.Debugf("claude executor: fetched %d models from Anthropic API", len(models))
+	}
+
+	return models
 }

@@ -7,6 +7,19 @@ package registry
 func GetClaudeModels() []*ModelInfo {
 	return []*ModelInfo{
 
+		// Claude 4.6 - Latest flagship model
+		{
+			ID:                  "claude-opus-4-6",
+			Object:              "model",
+			Created:             1770000000, // 2026-02-02 (approximate)
+			OwnedBy:             "anthropic",
+			Type:                "claude",
+			DisplayName:         "Claude 4.6 Opus",
+			Description:         "Most intelligent model for building agents and coding",
+			ContextLength:       200000,
+			MaxCompletionTokens: 128000,
+			Thinking:            &ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: true},
+		},
 		{
 			ID:                  "claude-haiku-4-5-20251001",
 			Object:              "model",
@@ -840,6 +853,8 @@ func GetAntigravityModelConfig() map[string]*AntigravityModelConfig {
 		"gemini-3-flash":             {Thinking: &ThinkingSupport{Min: 128, Max: 32768, ZeroAllowed: false, DynamicAllowed: true, Levels: []string{"minimal", "low", "medium", "high"}}},
 		"claude-sonnet-4-5-thinking": {Thinking: &ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: true}, MaxCompletionTokens: 64000},
 		"claude-opus-4-5-thinking":   {Thinking: &ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: true}, MaxCompletionTokens: 64000},
+		"claude-opus-4-6":            {Thinking: &ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: true}, MaxCompletionTokens: 128000},
+		"claude-opus-4-6-thinking":   {Thinking: &ThinkingSupport{Min: 1024, Max: 128000, ZeroAllowed: true, DynamicAllowed: true}, MaxCompletionTokens: 128000},
 		"claude-sonnet-4-5":          {MaxCompletionTokens: 64000},
 		"gpt-oss-120b-medium":        {},
 		"tab_flash_lite_preview":     {},

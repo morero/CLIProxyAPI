@@ -709,7 +709,14 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	var models []*ModelInfo
 	switch provider {
 	case "gemini":
-		models = registry.GetGeminiModels()
+		// Try to fetch models dynamically from Google API
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		models = executor.FetchGeminiModels(ctx, a, s.cfg)
+		cancel()
+		// Fall back to static models if dynamic fetch fails
+		if len(models) == 0 {
+			models = registry.GetGeminiModels()
+		}
 		if entry := s.resolveConfigGeminiKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildGeminiConfigModels(entry)
@@ -740,7 +747,14 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		cancel()
 		models = applyExcludedModels(models, excluded)
 	case "claude":
-		models = registry.GetClaudeModels()
+		// Try to fetch models dynamically from Anthropic API
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		models = executor.FetchClaudeModels(ctx, a, s.cfg)
+		cancel()
+		// Fall back to static models if dynamic fetch fails
+		if len(models) == 0 {
+			models = registry.GetClaudeModels()
+		}
 		if entry := s.resolveConfigClaudeKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildClaudeConfigModels(entry)
@@ -751,7 +765,14 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		}
 		models = applyExcludedModels(models, excluded)
 	case "codex":
-		models = registry.GetOpenAIModels()
+		// Try to fetch models dynamically from OpenAI API
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		models = executor.FetchCodexModels(ctx, a, s.cfg)
+		cancel()
+		// Fall back to static models if dynamic fetch fails
+		if len(models) == 0 {
+			models = registry.GetOpenAIModels()
+		}
 		if entry := s.resolveConfigCodexKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildCodexConfigModels(entry)
