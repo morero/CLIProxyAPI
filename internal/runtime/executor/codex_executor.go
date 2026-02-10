@@ -610,7 +610,7 @@ func codexCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
 	apiKey, baseURL := codexCreds(auth)
 	if apiKey == "" {
-		log.Debug("codex executor: no API key available for model fetch")
+		log.Warn("codex executor: no API key available for model fetch")
 		return nil
 	}
 	if baseURL == "" {
@@ -620,7 +620,7 @@ func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 	modelsURL := strings.TrimSuffix(baseURL, "/") + "/v1/models"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
-		log.Debugf("codex executor: failed to create models request: %v", err)
+		log.Warnf("codex executor: failed to create models request: %v", err)
 		return nil
 	}
 
@@ -630,19 +630,19 @@ func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 	httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
-		log.Debugf("codex executor: models request failed: %v", err)
+		log.Warnf("codex executor: models request failed: %v", err)
 		return nil
 	}
 	defer httpResp.Body.Close()
 
-	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-		log.Debugf("codex executor: models request returned status %d", httpResp.StatusCode)
+	bodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Warnf("codex executor: failed to read models response: %v", err)
 		return nil
 	}
 
-	bodyBytes, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		log.Debugf("codex executor: failed to read models response: %v", err)
+	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		log.Warnf("codex executor: models request returned status %d: %s", httpResp.StatusCode, string(bodyBytes))
 		return nil
 	}
 

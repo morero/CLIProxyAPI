@@ -709,15 +709,10 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	var models []*ModelInfo
 	switch provider {
 	case "gemini":
-		// Fetch models dynamically from Google API
+		// Fetch models dynamically - if this fails, provider won't be shown
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		models = executor.FetchGeminiModels(ctx, a, s.cfg)
 		cancel()
-		// Fall back to static models for OAuth auth since /v1/models may not work
-		// with OAuth tokens. For API keys, no fallback - if fetch fails, credentials are invalid.
-		if len(models) == 0 && authKind != "apikey" {
-			models = registry.GetGeminiModels()
-		}
 		if entry := s.resolveConfigGeminiKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildGeminiConfigModels(entry)
@@ -748,16 +743,10 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		cancel()
 		models = applyExcludedModels(models, excluded)
 	case "claude":
-		// Fetch models dynamically from Anthropic API
+		// Fetch models dynamically - if this fails, provider won't be shown
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		models = executor.FetchClaudeModels(ctx, a, s.cfg)
 		cancel()
-		// Fall back to static models for OAuth auth (Max subscription) since /v1/models
-		// may not work with OAuth tokens. For API keys, no fallback - if fetch fails,
-		// the credentials are likely invalid.
-		if len(models) == 0 && authKind != "apikey" {
-			models = registry.GetClaudeModels()
-		}
 		if entry := s.resolveConfigClaudeKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildClaudeConfigModels(entry)
@@ -768,15 +757,10 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		}
 		models = applyExcludedModels(models, excluded)
 	case "codex":
-		// Fetch models dynamically from OpenAI API
+		// Fetch models dynamically - if this fails, provider won't be shown
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		models = executor.FetchCodexModels(ctx, a, s.cfg)
 		cancel()
-		// Fall back to static models for OAuth auth since /v1/models may not work
-		// with OAuth tokens. For API keys, no fallback - if fetch fails, credentials are invalid.
-		if len(models) == 0 && authKind != "apikey" {
-			models = registry.GetOpenAIModels()
-		}
 		if entry := s.resolveConfigCodexKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildCodexConfigModels(entry)

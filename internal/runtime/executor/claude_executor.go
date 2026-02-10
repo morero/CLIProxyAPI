@@ -1000,7 +1000,7 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 func FetchClaudeModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
 	apiKey, baseURL := claudeCreds(auth)
 	if apiKey == "" {
-		log.Debug("claude executor: no API key available for model fetch")
+		log.Warn("claude executor: no API key available for model fetch")
 		return nil
 	}
 	if baseURL == "" {
@@ -1027,19 +1027,19 @@ func FetchClaudeModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
-		log.Debugf("claude executor: models request failed: %v", err)
+		log.Warnf("claude executor: models request failed: %v", err)
 		return nil
 	}
 	defer httpResp.Body.Close()
 
-	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-		log.Debugf("claude executor: models request returned status %d", httpResp.StatusCode)
+	bodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Warnf("claude executor: failed to read models response: %v", err)
 		return nil
 	}
 
-	bodyBytes, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		log.Debugf("claude executor: failed to read models response: %v", err)
+	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		log.Warnf("claude executor: models request returned status %d: %s", httpResp.StatusCode, string(bodyBytes))
 		return nil
 	}
 

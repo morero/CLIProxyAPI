@@ -458,7 +458,7 @@ func resolveGeminiBaseURL(auth *cliproxyauth.Auth) string {
 func FetchGeminiModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*registry.ModelInfo {
 	apiKey, bearer := geminiCreds(auth)
 	if apiKey == "" && bearer == "" {
-		log.Debug("gemini executor: no credentials available for model fetch")
+		log.Warn("gemini executor: no credentials available for model fetch")
 		return nil
 	}
 
@@ -470,7 +470,7 @@ func FetchGeminiModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
-		log.Debugf("gemini executor: failed to create models request: %v", err)
+		log.Warnf("gemini executor: failed to create models request: %v", err)
 		return nil
 	}
 
@@ -482,19 +482,19 @@ func FetchGeminiModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config
 	httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
-		log.Debugf("gemini executor: models request failed: %v", err)
+		log.Warnf("gemini executor: models request failed: %v", err)
 		return nil
 	}
 	defer httpResp.Body.Close()
 
-	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-		log.Debugf("gemini executor: models request returned status %d", httpResp.StatusCode)
+	bodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Warnf("gemini executor: failed to read models response: %v", err)
 		return nil
 	}
 
-	bodyBytes, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		log.Debugf("gemini executor: failed to read models response: %v", err)
+	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		log.Warnf("gemini executor: models request returned status %d: %s", httpResp.StatusCode, string(bodyBytes))
 		return nil
 	}
 
