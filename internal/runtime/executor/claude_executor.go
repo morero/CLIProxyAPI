@@ -88,6 +88,12 @@ func (e *ClaudeExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Aut
 func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
+	// Check for 1M context variant and prepare beta header injection
+	use1MContext := strings.HasSuffix(baseModel, "-1m")
+	if use1MContext {
+		baseModel = strings.TrimSuffix(baseModel, "-1m")
+	}
+
 	apiKey, baseURL := claudeCreds(auth)
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
@@ -125,6 +131,10 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	// Extract betas from body and convert to header
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
+	// Add 1M context beta header if using -1m model variant
+	if use1MContext {
+		extraBetas = append(extraBetas, "context-1m-2025-08-07")
+	}
 	bodyForTranslation := body
 	bodyForUpstream := body
 	if isClaudeOAuthToken(apiKey) {
@@ -222,6 +232,12 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
+	// Check for 1M context variant and prepare beta header injection
+	use1MContext := strings.HasSuffix(baseModel, "-1m")
+	if use1MContext {
+		baseModel = strings.TrimSuffix(baseModel, "-1m")
+	}
+
 	apiKey, baseURL := claudeCreds(auth)
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
@@ -257,6 +273,10 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// Extract betas from body and convert to header
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
+	// Add 1M context beta header if using -1m model variant
+	if use1MContext {
+		extraBetas = append(extraBetas, "context-1m-2025-08-07")
+	}
 	bodyForTranslation := body
 	bodyForUpstream := body
 	if isClaudeOAuthToken(apiKey) {
@@ -388,6 +408,12 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
+	// Check for 1M context variant and prepare beta header injection
+	use1MContext := strings.HasSuffix(baseModel, "-1m")
+	if use1MContext {
+		baseModel = strings.TrimSuffix(baseModel, "-1m")
+	}
+
 	apiKey, baseURL := claudeCreds(auth)
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
@@ -407,6 +433,10 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	// Extract betas from body and convert to header (for count_tokens too)
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
+	// Add 1M context beta header if using -1m model variant
+	if use1MContext {
+		extraBetas = append(extraBetas, "context-1m-2025-08-07")
+	}
 	if isClaudeOAuthToken(apiKey) {
 		body = applyClaudeToolPrefix(body, claudeToolPrefix)
 	}
