@@ -743,10 +743,14 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		cancel()
 		models = applyExcludedModels(models, excluded)
 	case "claude":
-		// Fetch models dynamically - if this fails, provider won't be shown
+		// Fetch models dynamically from Anthropic API
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		models = executor.FetchClaudeModels(ctx, a, s.cfg)
 		cancel()
+		// Fall back to static models for OAuth (Anthropic's /v1/models doesn't support OAuth)
+		if len(models) == 0 {
+			models = registry.GetClaudeModels()
+		}
 		if entry := s.resolveConfigClaudeKey(a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildClaudeConfigModels(entry)
