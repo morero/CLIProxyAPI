@@ -113,7 +113,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		body, _ = sjson.SetBytes(body, "instructions", "")
 	}
 
-	url := strings.TrimSuffix(baseURL, "/") + "/responses"
+	url := strings.TrimSuffix(baseURL, "/") + "/v1/responses"
 	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
 	if err != nil {
 		return resp, err
@@ -225,7 +225,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		body, _ = sjson.SetBytes(body, "instructions", "")
 	}
 
-	url := strings.TrimSuffix(baseURL, "/") + "/responses"
+	url := strings.TrimSuffix(baseURL, "/") + "/v1/responses"
 	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
 	if err != nil {
 		return nil, err
