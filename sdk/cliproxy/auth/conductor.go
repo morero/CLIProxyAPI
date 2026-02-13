@@ -1610,6 +1610,27 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
+
+	// Claude-specific auth routing: OAuth preferred for normal models, API key required for beta/1M models.
+	// Normal models: OAuth preferred, API key as fallback if no OAuth available.
+	// Beta/1M models: API key ONLY (OAuth doesn't support these features).
+	if _, hasClaude := providerSet["claude"]; hasClaude {
+		candidates = filterClaudeAuthByModelType(candidates, model)
+		if len(candidates) == 0 {
+			m.mu.RUnlock()
+			if isClaudeBetaModel(model) {
+				return nil, nil, "", &Error{
+					Code:    "api_key_required",
+					Message: "1M context models require API key authentication. Add an API key with: proxy-ctl login claude (select 'both' method) or set ANTHROPIC_API_KEY",
+				}
+			}
+			return nil, nil, "", &Error{
+				Code:    "auth_not_found",
+				Message: "No Claude authentication configured. Run: proxy-ctl login claude",
+			}
+		}
+	}
+
 	selected, errPick := m.selector.Pick(ctx, "mixed", model, opts, candidates)
 	if errPick != nil {
 		m.mu.RUnlock()
@@ -2203,4 +2224,66 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
 	}
 	return exec.HttpRequest(ctx, auth, req)
+}
+
+// isClaudeBetaModel returns true if the model requires beta features (like 1M context).
+// These models require API key authentication and cannot use OAuth.
+func isClaudeBetaModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	// 1M context models have -1m suffix
+	return strings.HasSuffix(model, "-1m")
+}
+
+// filterClaudeAuthByModelType filters Claude auth candidates based on model type.
+// - Beta/1M models: API key auth ONLY (OAuth doesn't support these features)
+// - Normal models: OAuth preferred, API key as fallback if no OAuth available
+func filterClaudeAuthByModelType(candidates []*Auth, model string) []*Auth {
+	if len(candidates) == 0 {
+		return candidates
+	}
+
+	// Check if any candidates are Claude provider
+	hasClaudeCandidates := false
+	for _, c := range candidates {
+		if strings.ToLower(strings.TrimSpace(c.Provider)) == "claude" {
+			hasClaudeCandidates = true
+			break
+		}
+	}
+	if !hasClaudeCandidates {
+		return candidates
+	}
+
+	isBeta := isClaudeBetaModel(model)
+
+	// Separate Claude candidates by auth type
+	var oauthCandidates, apiKeyCandidates []*Auth
+	var nonClaudeCandidates []*Auth
+
+	for _, c := range candidates {
+		provider := strings.ToLower(strings.TrimSpace(c.Provider))
+		if provider != "claude" {
+			nonClaudeCandidates = append(nonClaudeCandidates, c)
+			continue
+		}
+
+		authType, _ := c.AccountInfo()
+		if authType == "oauth" {
+			oauthCandidates = append(oauthCandidates, c)
+		} else if authType == "api_key" {
+			apiKeyCandidates = append(apiKeyCandidates, c)
+		}
+	}
+
+	if isBeta {
+		// Beta/1M models: API key ONLY (OAuth doesn't support these features)
+		return append(nonClaudeCandidates, apiKeyCandidates...)
+	}
+
+	// Normal models: OAuth preferred, API key as fallback
+	if len(oauthCandidates) > 0 {
+		return append(nonClaudeCandidates, oauthCandidates...)
+	}
+	// No OAuth available - fall back to API key
+	return append(nonClaudeCandidates, apiKeyCandidates...)
 }

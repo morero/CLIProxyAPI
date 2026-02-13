@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/toon"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -106,6 +107,11 @@ func (e *GeminiExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Aut
 func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
+	// Parse TOON flags from model name
+	toonInfo := toon.ParseModel(baseModel)
+	baseModel = toonInfo.BaseModel
+	useTOON := toonInfo.UseTOON
+
 	apiKey, bearer := geminiCreds(auth)
 
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
@@ -130,6 +136,14 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
+
+	// Apply TOON compression if enabled
+	if useTOON {
+		body, _ = toon.ApplyTOONCompression(body, toon.DefaultOptions())
+		if !toon.HasTOONHint(body) {
+			body, _ = toon.InjectTOONHint(body)
+		}
+	}
 
 	action := "generateContent"
 	if req.Metadata != nil {
@@ -210,6 +224,11 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
+	// Parse TOON flags from model name
+	toonInfo := toon.ParseModel(baseModel)
+	baseModel = toonInfo.BaseModel
+	useTOON := toonInfo.UseTOON
+
 	apiKey, bearer := geminiCreds(auth)
 
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
@@ -233,6 +252,14 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
+
+	// Apply TOON compression if enabled
+	if useTOON {
+		body, _ = toon.ApplyTOONCompression(body, toon.DefaultOptions())
+		if !toon.HasTOONHint(body) {
+			body, _ = toon.InjectTOONHint(body)
+		}
+	}
 
 	baseURL := resolveGeminiBaseURL(auth)
 	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, baseModel, "streamGenerateContent")

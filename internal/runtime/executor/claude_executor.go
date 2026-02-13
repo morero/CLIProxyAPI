@@ -20,6 +20,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/toon"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -88,11 +89,11 @@ func (e *ClaudeExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Aut
 func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	// Check for 1M context variant and prepare beta header injection
-	use1MContext := strings.HasSuffix(baseModel, "-1m")
-	if use1MContext {
-		baseModel = strings.TrimSuffix(baseModel, "-1m")
-	}
+	// Parse TOON and 1M context flags from model name
+	toonInfo := toon.ParseModel(baseModel)
+	baseModel = toonInfo.BaseModel
+	use1MContext := toonInfo.Use1MContext
+	useTOON := toonInfo.UseTOON
 
 	apiKey, baseURL := claudeCreds(auth)
 	if baseURL == "" {
@@ -127,6 +128,15 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
 	body = disableThinkingIfToolChoiceForced(body)
+
+	// Apply TOON compression if enabled
+	if useTOON {
+		body, _ = toon.ApplyTOONCompression(body, toon.DefaultOptions())
+		// Inject TOON format hint into system prompt
+		if !toon.HasTOONHint(body) {
+			body, _ = toon.InjectTOONHint(body)
+		}
+	}
 
 	// Extract betas from body and convert to header
 	var extraBetas []string
@@ -232,11 +242,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	// Check for 1M context variant and prepare beta header injection
-	use1MContext := strings.HasSuffix(baseModel, "-1m")
-	if use1MContext {
-		baseModel = strings.TrimSuffix(baseModel, "-1m")
-	}
+	// Parse TOON and 1M context flags from model name
+	toonInfo := toon.ParseModel(baseModel)
+	baseModel = toonInfo.BaseModel
+	use1MContext := toonInfo.Use1MContext
+	useTOON := toonInfo.UseTOON
 
 	apiKey, baseURL := claudeCreds(auth)
 	if baseURL == "" {
@@ -269,6 +279,14 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 	// Disable thinking if tool_choice forces tool use (Anthropic API constraint)
 	body = disableThinkingIfToolChoiceForced(body)
+
+	// Apply TOON compression if enabled
+	if useTOON {
+		body, _ = toon.ApplyTOONCompression(body, toon.DefaultOptions())
+		if !toon.HasTOONHint(body) {
+			body, _ = toon.InjectTOONHint(body)
+		}
+	}
 
 	// Extract betas from body and convert to header
 	var extraBetas []string

@@ -1,6 +1,6 @@
 module github.com/router-for-me/CLIProxyAPI/v6
 
-go 1.24.0
+go 1.25.4
 
 require (
 	github.com/andybalholm/brotli v1.0.6
@@ -62,6 +62,7 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.2 // indirect
 	github.com/pjbgf/sha1cd v0.5.0 // indirect
+	github.com/roboogg133/goon v0.9.9 // indirect
 	github.com/rs/xid v1.5.0 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect

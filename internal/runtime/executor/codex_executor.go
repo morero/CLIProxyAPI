@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/toon"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -76,6 +77,11 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
+	// Parse TOON flags from model name
+	toonInfo := toon.ParseModel(baseModel)
+	baseModel = toonInfo.BaseModel
+	useTOON := toonInfo.UseTOON
+
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
 		baseURL = "https://chatgpt.com/backend-api/codex"
@@ -111,6 +117,14 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	if !gjson.GetBytes(body, "instructions").Exists() {
 		body, _ = sjson.SetBytes(body, "instructions", "")
+	}
+
+	// Apply TOON compression if enabled
+	if useTOON {
+		body, _ = toon.ApplyTOONCompression(body, toon.DefaultOptions())
+		if !toon.HasTOONHint(body) {
+			body, _ = toon.InjectTOONHint(body)
+		}
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/v1/responses"
@@ -189,6 +203,11 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
+	// Parse TOON flags from model name
+	toonInfo := toon.ParseModel(baseModel)
+	baseModel = toonInfo.BaseModel
+	useTOON := toonInfo.UseTOON
+
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
 		baseURL = "https://chatgpt.com/backend-api/codex"
@@ -223,6 +242,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	if !gjson.GetBytes(body, "instructions").Exists() {
 		body, _ = sjson.SetBytes(body, "instructions", "")
+	}
+
+	// Apply TOON compression if enabled
+	if useTOON {
+		body, _ = toon.ApplyTOONCompression(body, toon.DefaultOptions())
+		if !toon.HasTOONHint(body) {
+			body, _ = toon.InjectTOONHint(body)
+		}
 	}
 
 	url := strings.TrimSuffix(baseURL, "/") + "/v1/responses"
